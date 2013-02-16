@@ -1,0 +1,12 @@
+<ul>
+  {{#properties}}
+  <li>
+    Title: {{title}}, Link: <a href="http://www.tripadvisor.co.uk/{{href}}">Link</a>, Ratings:
+    <ul>
+      {{#reviews}}
+      <li>{{date}} | {{rating}} | {{review_count}}</li>
+      {{/reviews}}
+    </ul>
+  </li>
+  {{/properties}}
+</ul>
