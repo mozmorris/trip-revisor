@@ -10,36 +10,35 @@ module.exports = function (app, config) {
 
   // gets the properties for a location
   var getProperties = function(location, callback) {
-    getPropertyPageCount(location, function(pageCount) {
+    getPropertyPageCount(location, function(err, pageCount) {
       app.getModel("Property").properties(location, pageCount, callback)
     })
   }
 
-  // gets the review count for a property
-  var getReviewCount = function(property, callback) {
-    app.getModel("Property").reviewCount(property, callback)
-  }
-
-  // gets the reviews for a property
-  var getReviews = function(property, callback) {
-    app.getModel("Property").reviews(property, callback)
-  }
-
   return app.getController("Application", true).extend()
   .methods({
-    index: function (req, res) {
-
+    create: function(req, res) {
+      app.getModel("Location").create('Southampton', 186299, v.bind(this, function(err, location) {
+        this.render(res, viewFolder + '/view', location)
+      }))
     },
-    properties: function(req, res, id) {
-      var that = this
-      var data = {title: 'properties'}
-      var query = require('url').parse(req.path, true).query
-      if (query.fragment) data.layout = false
+    view: function(req, res) {
+      // meta
+      var data = {title: 'property'}
 
-      getProperties(req.params['id'], function(properties) {
+      app.getModel("Location").findByName('southampton', v.bind(this, function(err, location) {
+        this.render(res, viewFolder + '/view', location)
+      }))
+    },
+    properties: function(req, res) {
+      // meta
+      var data = {title: 'properties'}
+
+      // get the list of properties for the current location
+      getProperties(req.params['id'], v.bind(this, function(err, properties) {
         data.properties = properties
-        that.render(res, viewFolder + '/properties', data)
-      })
+        this.render(res, viewFolder + '/properties', data)
+      }))
     }
   })
 }

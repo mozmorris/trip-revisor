@@ -8,6 +8,8 @@
   "dependencies": {
     "matador": "1.1.21-beta",
     "node.io": "0.4.12",
-    "redis"  : "0.8.2"
+    "mongodb": "1.2.12",
+    "mongoose": "3.5.6",
+    "async":"0.2.5 "
   }
 }

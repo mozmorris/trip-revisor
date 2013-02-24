@@ -1,8 +1,18 @@
-var nodeio = require('node.io')
-
 module.exports = function (app, config) {
 
+  var nodeio = require('node.io')
+  var async = require('async')
+
   return app.getModel("Application", true).extend(function() {
+
+    // db schema
+    this.DBModel = this.mongoose.model('Property', new this.Schema({
+        name: { type: String, required: true, trim: true }
+      , trip_id: { type: Number, required: true }
+      , location_id: { type: Number, required: true }
+      , href: { type: String, required: true }
+      , review_count: { type: Number }
+    }))
 
     // scrapes the properties from the node tree
     this.scrapeListings = function(properties) {
@@ -38,30 +48,35 @@ module.exports = function (app, config) {
         return property
       })
 
+      // ditch any blanks
       return properties.filter(function(p) {
         if (p) return true;
       })
     }
   })
   .methods({
-
-    // returns all the properties for a given id
+    // return a location by name
+    findByName: function(name, callback) {
+      this.DBModel.findOne({ name: name }, callback)
+    },
+    // add a new location
+    create: function(name, trip_id, callback) {
+      var location = new this.DBModel({
+        name: name.toLowerCase(),
+        trip_id: trip_id
+      })
+      location.save(callback)
+    },
+    // returns all the properties for a given location id
     properties: function (location, pageCount, callback) {
 
       var that = this
-      var client = that.dbClient()
+      var db = this.DBModel
 
-      client.hget(location, 'properties', function(err, reply) {
+      db.find({ location_id: location }, v.bind(this, function(err, properties) {
 
-        // quit on error
-        if (err) {
-          client.quit()
-          return callback(false)
-        }
-
-        if (reply) {
-          client.quit()
-          return callback(JSON.parse(reply))
+        if (properties.length) {
+          return callback(false, properties)
         }
 
         // create an array of page offsets based on the number
@@ -90,50 +105,64 @@ module.exports = function (app, config) {
                 return this.fail()
               }
 
+              // extract the property id, title and href
               this.emit(that.scrapeListings(properties))
             })
           }
         })
 
+        // nodeio job
         nodeio.start(job, { id: location, offset: 0, type: 'Restaurant' }, function(err, output) {
           if (err) {
-            callback(false)
-            return
+            return callback(false)
           }
 
-          client.hset(location, 'properties', JSON.stringify(output), app.db.print)
-          client.quit()
+          // save the properties in parallel
+          var functions = [];
+          for (var i=0; i < output.length; i++) {
+            functions.push((function(o) {
+              return function(callback) {
+                var property = new db({
+                  name: o.title,
+                  trip_id: o.id,
+                  href: o.href,
+                  location_id: location
+                })
+                property.save(callback)
+              };
+            })(output[i]));
+          }
 
-          callback(output)
+          async.parallel(functions, function(err, results) {
+            callback(results);
+          });
+
         }, true)
-      })
+      }))
     },
 
     // returns the review count for a property
-    reviewCount: function(property, callback) {
+    reviewCount: function(propertyId, callback) {
 
-      var client = this.dbClient()
+      var db = this.DBModel
 
-      client.hget(property.id, 'review_count', function(err, reply) {
+      db.findOne({ trip_id: propertyId }, v.bind(this, function(err, result) {
 
-        // error
-        if (err) {
-          client.quit()
-          return callback(false)
+        if (!result) {
+          // no property
+          return callback(true)
         }
 
-        // return count if already stored
-        if (reply) {
-          client.quit()
-          return callback(JSON.parse(reply))
+        if (result && result.review_count) {
+          return callback(false, result.review_count)
         }
 
         var job = new nodeio.Job(this.nodeOptions, {
           input: false,
           run: function () {
-            this.getHtml('http://www.tripadvisor.co.uk/Restaurant_Review-g186299-d' + this.options.property.id + '-Reviews-or0.html', function (err, $) {
+            this.getHtml('http://www.tripadvisor.co.uk/Restaurant_Review-g186299-d' + this.options.propertyId + '-Reviews-or0.html', function (err, $) {
 
-              // retry
+              // retry on error
               if (err) {
                 return this.retry()
               }
@@ -143,98 +172,25 @@ module.exports = function (app, config) {
 
               if (!reviewCount) return this.retry()
 
-              // calculate the page count & return the property
+              // calculate the page count
               this.emit(Math.ceil(reviewCount / 10))
             })
           }
         })
 
-        nodeio.start(job, { property: property }, function(err, output) {
+        // nodeio job
+        nodeio.start(job, { propertyId: propertyId }, function(err, output) {
           if (err) {
-            return callback(false)
+            return callback(true)
           }
 
-          client.hset(property.id, 'review_count', output, app.db.print)
-          client.quit()
-          return callback(output)
-
+          db.update({ trip_id: propertyId}, {
+            review_count: output[0]
+          }, function(err, row, raw) {
+            return callback(false, output[0])
+          })
         }, true)
-      })
-    },
-
-    // returns all the ratings for a set of properties
-    reviews: function(property, callback) {
-
-      var client = this.dbClient()
-
-      client.hget(property.id, 'reviews', function(err, reply) {
-
-        if (err) {
-          console.log(property.id)
-          client.quit()
-          return callback(false)
-        }
-
-        if (reply) {
-          client.quit()
-          return callback(JSON.parse(reply))
-        }
-
-        var offsets = []
-        for (var i = 0; i < property.reviewCount; i++) {
-          offsets.push(i * 10)
-        }
-
-        var job = new nodeio.Job(this.nodeOptions, {
-          input: offsets,
-          run: function (offset) {
-            this.getHtml('http://www.tripadvisor.co.uk/Restaurant_Review-g186299-d' + this.options.property.id + '-Reviews-or' + offset + '.html', function (err, $) {
-
-              if (err) {
-                this.fail()
-                return
-              }
-
-              // extract the review from the page
-              var reviews = $('#REVIEWS .review')
-
-              if (typeof reviews[0] === 'undefined') {
-                this.fail()
-                return
-              }
-
-              // return the review date, rating and users review count
-              this.emit(reviews.map(function(r) {
-                var reviewCount = 0
-
-                if (typeof r.children[0].children[1] == 'undefined') {
-                  return { empty: true }
-                }
-
-                if (typeof r.children[0].children[1].children[0].children[1] !== 'undefined') {
-                  reviewCount = r.children[0].children[1].children[0].children[1].attribs.alt.replace(/ (reviews|review)/, '')
-                } else {
-                  reviewCount = r.children[0].children[1].children[0].children[0].children[0].data.replace(/ (reviews|review)/, '')
-                }
-
-                return {
-                  date: Date.parse(r.children[1].children[1].children[1].children[0].data.replace(/Reviewed /, '')),
-                  rating: r.children[1].children[1].children[0].children[0].attribs.content,
-                  review_count: reviewCount
-                }
-              }))
-            })
-          }
-        });
-
-        // start the job, returns control to the callback when all
-        // properties have been processed
-        nodeio.start(job, { property: property }, function(err, output) {
-            client.hset(property.id, 'reviews', JSON.stringify(output), app.db.print)
-            client.quit()
-            return callback(output)
-        }, true)
-      })
+      }))
     }
   })
 }
